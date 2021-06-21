@@ -1,5 +1,5 @@
 $schema: http://json-schema.org/draft-07/schema
-version: "1.0"
+version: "1.2"
 title: Test config
 type: object
 description: Graderutils runtime configuration file
@@ -9,6 +9,9 @@ properties:
   feedback_template:
     description: Custom Jinja2 template for rendering feedback
     type: string
+  testmethod_timeout:
+    description: Time in seconds, after which test method execution is timed out
+    type: integer
   format_tracebacks:
     description: Options for formatting traceback strings from specific exception classes
     type: array
@@ -39,7 +42,13 @@ properties:
           type: boolean
         remove_more_sentinel:
           description: |
-            If hide_tracebacks is given and true, continue removing traceback until this sentinel is found.
+            [Deprecated, use remove_sentinel instead] If hide_tracebacks is given and true, continue removing traceback until this sentinel is found.
+            Removes also the sentinel.
+          minLength: 1
+          type: string
+        remove_sentinel:
+          description: |
+            Removes traceback until this sentinel is found.
             Removes also the sentinel.
           minLength: 1
           type: string

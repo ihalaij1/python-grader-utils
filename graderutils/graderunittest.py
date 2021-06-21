@@ -1,6 +1,7 @@
 """
 Extensions for unittest tests.
 """
+import contextlib
 import functools
 import importlib
 import io
@@ -8,11 +9,20 @@ import itertools
 import logging
 import re
 import signal
+import sys
 import time
 import unittest
 
+from graderutils import GraderUtilsError
+
 
 logger = logging.getLogger("warnings")
+
+testmethod_timeout = 60
+
+'''Maximum string length of the stderr stream for one test module.
+If the output is longer, the rest is not included in the grading payload.'''
+TEST_MODULE_STDERR_MAX_SIZE = 50000
 
 
 class PointsTestResult(unittest.TextTestResult):
@@ -45,7 +55,7 @@ class PointsTestResult(unittest.TextTestResult):
         self.patch_message(test, "on_error")
 
 
-def points(points_on_success, msg_on_success='', msg_on_fail='', msg_on_error=''):
+def points(points_on_success, msg_on_success="The test was a success!", msg_on_fail="The test failed, reason:", msg_on_error="An error occurred:"):
     """
     Return a decorator for unittest.TestCase test methods, which patches each test method with a graderutils_points attribute.
     """
@@ -62,7 +72,16 @@ def points(points_on_success, msg_on_success='', msg_on_fail='', msg_on_error=''
         @functools.wraps(testmethod)
         def points_patching_testmethod(case, *args, **kwargs):
             case.graderutils_points = graderutils_points
-            return testmethod(case, *args, **kwargs)
+            try: # SystemExit and KeyboardInterrupt kill grader if not caught
+                running_time, result = result_or_timeout(testmethod, (case, *args), kwargs, timeout=testmethod_timeout)
+                if running_time == testmethod_timeout and result is None:
+                    raise TimeoutError("Test timed out after {} seconds. Your code may be "
+                                       "stuck in an infinite loop or it runs very slowly.".format(testmethod_timeout))
+                return result
+            except SystemExit as e:
+                raise GraderUtilsError("Grader does not support the usage of sys.exit(), exit() or quit().") from e
+            except KeyboardInterrupt as e:
+                raise GraderUtilsError("Grader does not support raising KeyboardInterrupt.") from e
         return points_patching_testmethod
     return points_decorator
 
@@ -132,6 +151,11 @@ class PointsTestRunner(unittest.TextTestRunner):
         return result
 
 
+# TimeoutExit will not be suppressed by libraries that do `except Exception: pass` because it inherits from BaseException
+class TimeoutExit(BaseException):
+    pass
+
+
 def result_or_timeout(timed_function, args=(), kwargs=None, timeout=1, timer=time.perf_counter):
     """
     Call timed_function with args and kwargs and benchmark the execution time with timer.
@@ -143,7 +167,7 @@ def result_or_timeout(timed_function, args=(), kwargs=None, timeout=1, timer=tim
         kwargs = dict()
 
     def handler(*h_args, **h_kwargs):
-        raise TimeoutError()
+        raise TimeoutExit()
 
     signal.signal(signal.SIGALRM, handler)
     signal.alarm(timeout)
@@ -152,13 +176,18 @@ def result_or_timeout(timed_function, args=(), kwargs=None, timeout=1, timer=tim
         start_time = timer()
         result = timed_function(*args, **kwargs)
         running_time = timer() - start_time
-    except TimeoutError:
+    except TimeoutExit:
         running_time = timeout
         result = None
     finally:
         signal.alarm(0)
 
     return running_time, result
+
+
+class ModuleLevelError(Exception):
+    def __init__(self, other):
+        self.cause = other
 
 
 def run_test_suite_in_named_module(module_name):
@@ -168,11 +197,22 @@ def run_test_suite_in_named_module(module_name):
     Return a PointsTestResult containing the results.
     """
     loader = unittest.defaultTestLoader
-    test_module = importlib.import_module(module_name)
-    test_suite = loader.loadTestsFromModule(test_module)
-    # Redirect output to string stream and increase verbosity
-    runner = PointsTestRunner(stream=io.StringIO(), verbosity=2)
-    result = runner.run(test_suite)
+    err = io.StringIO()
+    try:
+        with contextlib.redirect_stderr(err):
+            # Module output must be suppressed during import and run, since grading json is printed to stdout as well
+            with contextlib.redirect_stdout(None):
+                try: # Catch module-level errors
+                    test_module = importlib.import_module(module_name)
+                except BaseException as e:
+                    raise ModuleLevelError(e)
+                test_suite = loader.loadTestsFromModule(test_module)
+                # Redirect output to string stream and increase verbosity
+                runner = PointsTestRunner(stream=io.StringIO(), verbosity=2)
+                result = runner.run(test_suite)
+    finally:
+        # Limit maximum size of the stderr output of this test group to 50kB
+        sys.stderr.write(err.getvalue()[:TEST_MODULE_STDERR_MAX_SIZE])
     return result
 
 
