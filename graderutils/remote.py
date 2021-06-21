@@ -58,6 +58,10 @@ class RPCImport:
         self.module = getattr(self.conn.modules, fullname)
         return self
 
+    def find_spec(self, name, path, target=None):
+        self.find_module(name, path, target)
+        return self.module.__spec__
+
     def create_module(self, spec):
         return self.module
 
